@@ -1,0 +1,204 @@
+---
+title: "Your Document Title"
+author: "Document Author"
+date: "`r Sys.Date()`"
+output:
+  prettydoc::html_pretty:
+    theme: architect
+    highlight: github
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r eines, results='hide', message=FALSE}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+     install.packages("BiocManager")
+BiocManager::install()
+install.packages("knitr")
+install.packages("colorspace")
+install.packages("gplots")
+install.packages("ggplot2")
+install.packages("ggrepel")
+install.packages("htmlTable")
+install.packages("prettydoc")
+install.packages("devtools")
+install.packages("BiocManager")
+BiocManager::install("oligo")
+BiocManager::install("pd.mogene.2.1.st")
+BiocManager::install("arrayQualityMetrics")
+BiocManager::install("pvca")
+BiocManager::install("limma")
+BiocManager::install("genefilter")
+BiocManager::install("mogene21sttranscriptcluster.db")
+BiocManager::install("annotate")
+BiocManager::install("org.Mm.eg.db")
+BiocManager::install("ReactomePA")
+BiocManager::install("reactome.db")
+BiocManager::install(c("affy", "Biobase"))
+BiocManager::install("GEOquery")
+library(GEOquery)
+library(oligo)
+library(affy)
+library(Biobase)
+```
+
+```{r, results='hide', message=FALSE}
+getwd()
+wd<-"/Users/annia/Library/CloudStorage/GoogleDrive-acniell@gmail.com/My Drive/UOC/TERCER QUADRIMESTRE/ANÀLISI DADES ÒMIQUES/PEC2/PEC2"
+dataDir <- file.path(wd, "dades")
+resultsDir <- file.path(wd, "results")
+```
+
+# PEC 2
+
+## TAULA DE CONTINGUTS
+
+-   [INTRODUCCIÓ](#introducció)
+
+-   [PREPARACIÓ DE LES DADES](#preparació-de-les-dades)
+
+-   [TREBALLAR AMB GSE38531_SERIES_MATRIX.TXT](#treballar-amb-GSE38531_SERIES_MATRIX.TXT)
+
+-   [DESCÀRREGA DELS FITXERS CEL A L'ENTORN LOCAL](#descàrrega-dels-fitxers-cel-a-l'entorn-local)
+
+-   [ANÀLISI EXPLORATÒRIA I CONTROL DE QUALITAT](#anàlisi-exploratòria-i-control-de-qualitat)
+
+-   [DISCUSSIÓ I LIMITACIONS I CONCLUSIONS DE L'ESTUDI](#discussio-i-limitacions-i-conclusions-de-lestudi)
+
+-   [ANNEX: CODI DE R I GRÀFICS](#annex-codi-de-r-i-gràfics)
+
+-   [1. IMPORTAR I CARREGAR LES DADES](#importar-i-carregar-les-dades)
+
+-   [2. EXPLORACIÓ MÍNIMA ORIENTATIVA](#exploració-mínima-orientativa)
+
+-   [3. CREACIÓ DEL SUMMARIZED EXPERIMENT](#creació-del-summarized-experiment)
+
+-   [4. EXPLORACIÓ DEL SUMMARIZED EXPERIMENT (SE)](#exploració-del-summarized-experiment-se)
+
+-   [5. ANÀLISI DE PCA](#anàlisi-de-pca)
+
+    -   [5.1 CÀRREGUES DELS METABOLITS A PC1 I PC2](#càrregues-dels-metabòlits-a-pc1-i-pc2)
+
+## 1. INTRODUCCIÓ {#introducció}
+
+### 2. PREPARACIÓ DE LES DADES {#preparació-de-les-dades}
+
+Carreguem l'arxiu de allTargets per fer la selecció.
+
+```{r}
+allTargets <- read.table("allTargets.txt", header = TRUE, sep = " ", stringsAsFactors = FALSE)
+```
+
+Apliquem el codi cedit:
+
+```{r}
+filter_microarray <- function(allTargets, seed =123) {
+  set.seed(seed)
+  filtered <- subset(allTargets, time != "hour 2")
+  
+  # Dividir el dataset por grupos únicos de 'infection' + 'agent'
+  filtered$group <- interaction(filtered$infection, filtered$agent)
+  
+  # Seleccionar 4 muestras al azar de cada grupo
+  selected <- do.call(rbind, lapply(split(filtered, filtered$group), function(group_data) {
+    if (nrow(group_data) > 4) {
+      group_data[sample(1:nrow(group_data), 4), ]
+    } else {
+      group_data
+    }
+  }))
+  
+  # Obtener los índices originales como nombres de las filas seleccionadas
+  original_indices <- match(selected$sample, allTargets$sample)
+  
+  # Modificar los rownames usando 'sample' y los índices originales
+  rownames(selected) <- paste0(selected$sample, ".", original_indices)
+  
+  # Eliminar la columna 'group' y devolver el resultado
+  selected$group <- NULL
+  return(selected)
+}
+
+```
+
+Fem la selecció aleatòria i la guardem en un nou fitxer per si de cas.
+
+```{r}
+# Aplicar la función (cambiar 123 por vuestro ID de la UOC u otro número que podáis escribir en el documento)
+resultat_mostra <- filter_microarray(allTargets, seed=41577436)
+resultat_mostra
+write.table(resultat_mostra, file = file.path(dataDir, "mostra_seleccionada_41577436.txt"), 
+            sep = "\t", row.names = FALSE)
+```
+
+Ja tenim una selecció de 24 mostres aleatòries del dataset amb les que treballar.
+
+Ara tenim dues opcions: o descarreguem de la pàgina de GEO el supplementary File amb els arxius CEL a dins i seleccionem els que havien sortit amb la selecció aleatòria o bé treballem amb el fitxer "series matrix" disponible a la pàgina de GEO. Comencem primer amb la segona opció:
+
+#### 2.1 TREBALLAR AMB GSE38531_SERIES_MATRIX.TXT {#treballar-amb-GSE38531_SERIES_MATRIX.TXT}
+
+```{r carreguem_matriu}
+GSE38531<-getGEO("GSE38531", GSEMatrix = TRUE)
+GSE38531 #L'expressionSet
+```
+
+Ara accedirem als diferents blocs d'informació per veure que estigui tot correcte a primera vista:
+
+```{r expressionSet}
+ES<- GSE38531[[1]] 
+matriu_expressio<-exprs(ES)
+head(matriu_expressio)
+fenodata<-pData(ES)
+head(fenodata)
+```
+
+Ara volem agafar només la informació les mostres que hem seleccionat a l'atzar:
+
+```{r shrink_matrix}
+mostres <- read.table(file.path(dataDir, "mostra_seleccionada_41577436.txt"), 
+                      header = TRUE, sep = "\t", stringsAsFactors = FALSE)
+noms_mostra<-mostres$sample #llista dels que volem. 
+```
+
+```{r filtrar}
+sampleNames(ES)->noms_ES
+coincidencies<-intersect(noms_mostra, noms_ES)
+coincidencies #veiem que efectivament hi ha 24 elements a la llista. 
+ES2<-ES[,coincidencies]
+ES2
+```
+
+Ja tenim creat el nostre expressionSet amb la mostra que hem seleccionat aleatòriament.
+
+```{r}
+#ens el guardem per si el necessitem més tard naive
+write.csv(exprs(ES2), file = file.path(dataDir, "ES2.csv"))
+```
+
+#### 2.2 DESCÀRREGA DELS FITXERS CEL A L'ENTORN LOCAL {#descàrrega-dels-fitxers-cel-a-l'entorn-local}
+
+A la pàgina web de GEO (<https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE38531>) veiem que hi ha un arxiu anomenat Supplementary File on tenim tots els arxius CEL. Una vegada descarregats, eliminem els que no ens interessen després de fer la selecció aleatòria, ens quedem els que sí, i els hi ajustem el nom:
+
+![](images/clipboard-1499200730.png){width="93"}
+
+En aquest cas farem servir la llibreria oligo (els passos estan basats en el document cedit per la UOC "Statistical Analysis of Microarray data" <https://aspteaching.github.io/Omics_Data_Analysis-Case_Study_1-Microarrays/Case_Study_1-Microarrays_Analysis.html> )
+
+```{r rawData}
+library(oligo) #pels elements CET
+library(Biobase) 
+arxius_CEL <- list.celfiles("/Users/annia/Library/CloudStorage/GoogleDrive-acniell@gmail.com/My Drive/UOC/TERCER QUADRIMESTRE/ANÀLISI DADES ÒMIQUES/PEC2/PEC2/ARXIUS CEL", full.names = TRUE)
+phenoData<-AnnotatedDataFrame(data = mostres)
+rawData<-read.celfiles(arxius_CEL, phenoData=phenoData)
+rawData
+```
+
+Ja hem llegit els arxius CEL i hem associat la informació de l'element mostres, que té la selecció aleatòria que hem fet anteriorment.
+
+### 3. ANÀLISI EXPLORATÒRIA I CONTROL DE QUALITAT {#anàlisi-exploratòria-i-control-de-qualitat}
+
+Començarem per normalitzar les dades que hem generat anteriorment amb RMA tal com es proposa:
+```{r normalitza_rma}
+ESet<-rma(rawData)
+ESet
+```
+
